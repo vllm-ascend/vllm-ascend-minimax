@@ -26,6 +26,7 @@ _GBSA_MASK_MODE_CAUSAL = 1
 _GBSA_NO_QUANT = 0
 _GBSA_FP8_STATIC_CAST_P = 5
 _GBSA_SOFTMAX_PRECISION = 0
+_GBSA_FP8_SOFTMAX_PRECISION = 1
 _MSA_SCORE_BLOCK_ALIGNMENT = 16
 _FP8_E4M3_MAX = 448.0
 
@@ -185,12 +186,16 @@ def _run_generic_block_sparse_attention(
     seq_lens = seq_lens.to(dtype=torch.int32).contiguous()
 
     quant_mode = _GBSA_NO_QUANT
+    softmax_precision = _GBSA_SOFTMAX_PRECISION
     quant_kwargs: dict[str, Any] = {}
     if key.dtype == torch.float8_e4m3fn:
         if value.dtype != torch.float8_e4m3fn:
             raise TypeError("MiniMax-M3 FP8 sparse attention requires both K and V caches in E4M3")
         q = _to_fp8_e4m3(q)
         quant_mode = _GBSA_FP8_STATIC_CAST_P
+        # Bundled GBSA requires low-precision softmax for FP8 quant mode 5.
+        # Keep FP32 softmax for unquantized inputs, including A5 BF16.
+        softmax_precision = _GBSA_FP8_SOFTMAX_PRECISION
         quant_kwargs = {"attention_out_dtype": torch.bfloat16}
     elif q.dtype != key.dtype or value.dtype != key.dtype:
         raise TypeError("MiniMax-M3 sparse attention requires Q, K, and V to have the same dtype")
@@ -229,7 +234,7 @@ def _run_generic_block_sparse_attention(
             layout_kv="PA_BBND",
             mask_mode=_GBSA_MASK_MODE_CAUSAL,
             quant_mode=quant_mode,
-            softmax_precision=_GBSA_SOFTMAX_PRECISION,
+            softmax_precision=softmax_precision,
         )
         if cache is not None:
             cache[cache_key] = gbsa_metadata
@@ -249,7 +254,7 @@ def _run_generic_block_sparse_attention(
         softmax_scale=sm_scale,
         mask_mode=_GBSA_MASK_MODE_CAUSAL,
         quant_mode=quant_mode,
-        softmax_precision=_GBSA_SOFTMAX_PRECISION,
+        softmax_precision=softmax_precision,
         return_softmax_lse=False,
         **quant_kwargs,
     )
