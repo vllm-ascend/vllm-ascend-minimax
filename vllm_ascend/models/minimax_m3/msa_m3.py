@@ -9,7 +9,7 @@ from typing import Any, ClassVar
 import torch
 from torch import nn
 from torch.nn.parameter import Parameter
-from vllm.config import CacheConfig, VllmConfig, get_current_vllm_config
+from vllm.config import CacheConfig, VllmConfig, get_current_vllm_config, get_current_vllm_config_or_none
 from vllm.config.cache import CacheDType
 from vllm.config.compilation import CUDAGraphMode
 from vllm.distributed import divide, get_tensor_model_parallel_world_size, get_tp_group
@@ -54,7 +54,12 @@ from vllm_ascend.models.minimax_m3.ops.msa_m3_npu import (
 )
 from vllm_ascend.ops.linear import AscendColumnParallelLinear
 from vllm_ascend.ops.linear_op import get_parallel_op
-from vllm_ascend.utils import AscendDeviceType, get_ascend_device_type
+from vllm_ascend.utils import (
+    MINIMAX_M3_FP8_KV_CACHE_BLOCK_SIZE,
+    AscendDeviceType,
+    get_ascend_device_type,
+    is_minimax_m3_fp8_kv_cache,
+)
 
 # The bundled MsaIndexScore includes the Ascend 950 arch35 FP8 kernel. Keep it
 # enabled for A5 prefill, while A5 decode uses its lower-latency Triton path.
@@ -173,6 +178,10 @@ class AscendMiniMaxM3IndexerBackend(AttentionBackend):
 
     @staticmethod
     def get_supported_kernel_block_sizes() -> list[int | MultipleOf]:
+        if is_minimax_m3_fp8_kv_cache(get_current_vllm_config_or_none()):
+            # Match dense attention's mixed-KV alignment minimum on every PP
+            # stage. Upstream alignment keeps the final FP8 block at 128.
+            return [MINIMAX_M3_FP8_KV_CACHE_BLOCK_SIZE, 128]
         return [128]
 
     @classmethod
@@ -761,6 +770,10 @@ class AscendMiniMaxM3SparseBackend(AttentionBackend):
 
     @staticmethod
     def get_supported_kernel_block_sizes() -> list[int | MultipleOf]:
+        if is_minimax_m3_fp8_kv_cache(get_current_vllm_config_or_none()):
+            # Match dense attention's mixed-KV alignment minimum on every PP
+            # stage. Upstream alignment keeps the final FP8 block at 128.
+            return [MINIMAX_M3_FP8_KV_CACHE_BLOCK_SIZE, 128]
         return [128]
 
     @classmethod
