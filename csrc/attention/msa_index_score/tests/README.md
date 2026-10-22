@@ -29,8 +29,8 @@ bash build.sh --run_example msa_index_score eager cust \
   --vendor_name=custom --soc=ascend950
 ```
 
-The expected summary is 40/40 passing cases on Ascend 950. A2/A3 skip four
-FP8 cases and run 36 cases.
+The imported example defines 50 cases on Ascend 950. A2/A3 skip ten
+FP8 cases and run 40 cases.
 
 ## 2. Test Matrix
 
@@ -95,3 +95,33 @@ physical-page axis.
 - FLOAT16, BFLOAT16, and INT8 use `atol=rtol=1e-3` and an error ratio no
   greater than `1e-3`.
 - Ascend 950 FP8 uses `atol=rtol=2e-2`.
+
+## 4. PyTorch and ACL Graph Regression
+
+From the vllm-ascend repository root after rebuilding the custom OPP:
+
+```bash
+pytest -q tests/e2e/pull_request/one_card/test_msa_index_score.py
+```
+
+The decode pipeline matrix compares FP16/BF16 scores and invalid-tail masks
+against the independent CPU golden in eager mode and after two ACL Graph
+replays. It covers four index heads, one/four/32-request batches, uneven KV
+lengths, non-contiguous page axes, wide score rows, empty requests and prefill
+spanning multiple M tiles. The standalone example additionally covers INT8
+scales, BNBD and TND layouts. Ascend 950 FP8 cases require that hardware.
+
+## 5. Operator Microbenchmark
+
+Use separate processes with the baseline and candidate editable installations;
+rebuild each revision's custom OPP first. Run both on the same idle NPU:
+
+```bash
+python benchmarks/benchmark_msa_index_score.py --output /path/to/results.json
+```
+
+Each of eight FP16/BF16 decode cases checks scores against an independent
+PyTorch CPU reference before timing and after ACL Graph replay. Timings use NPU
+events around 100 operator calls per graph and report five trial values plus
+the median. Cases cover batches 1, 4 and 32, uneven KV lengths and speculative
+query length 4. These are operator timings; serving throughput is not measured.

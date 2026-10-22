@@ -1,5 +1,30 @@
 # MsaIndexScore
 
+## Source and integration
+
+This operator is bundled with vllm-ascend and is built by `csrc/build_aclnn.sh`
+for A2, A3 and Ascend 950. MiniMax calls the existing
+`torch.ops._C_ascend.npu_msa_index_score` binding, whose ACLNN adapter searches
+the bundled custom OPP before the CANN built-in libraries. Rebuild and reinstall
+vllm-ascend after changing these sources; no separate replacement of the CANN
+built-in MsaIndexScore is required. The CANN toolkit/runtime remains a dependency.
+
+The kernel, tiling and standalone example are synchronized from
+[CANN ops-transformer PR !14316](https://gitcode.com/cann/ops-transformer/pull/14316)
+at commit `390c0b588307199e42a7fdb6c0b67e6d29d356a7` (2026-10-21), including its
+KV chunk scheduling prerequisites. Repository-local header names and the
+A2/A3 Catlass submodule includes are retained. Pipeline-specific cross-core
+waits call AscendC directly because the repository Catlass snapshot lacks that
+overload. Ascend 950 keeps its private
+Catlass snapshot. The imported files retain their copyright notices and are
+covered by the adjacent [CANN Open Software License Agreement v2](./LICENSE).
+
+The A2/A3 update adds batch-aware KV chunking, rotating chunk assignment,
+resident Q in L0A, pipelined K loading, block-table prefetch and parallel filling
+of wide score tails. The shared task/tiling structures and Ascend 950 consumers
+are synchronized together to keep their internal ABI consistent. No public
+operator arguments or model backend selection are changed.
+
 ## Product Support
 
 | Product                                                               | Supported |
@@ -119,8 +144,8 @@ bash build.sh --run_example msa_index_score eager cust \
   --vendor_name=custom --soc=ascend950
 ```
 
-The expected result is 40/40 cases on 950PR&950DT Products. A2/A3 skip the four FP8
-cases and run 36 cases. FLOAT16/BFLOAT16/INT8 use a tolerance of `1e-3`; FP8
+The imported example defines 50 cases on 950PR&950DT Products. A2/A3 skip the ten FP8
+cases and run 40 cases. FLOAT16/BFLOAT16/INT8 use a tolerance of `1e-3`; FP8
 uses `2e-2`.
 
 ## References

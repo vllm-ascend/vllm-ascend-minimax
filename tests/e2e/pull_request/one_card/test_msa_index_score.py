@@ -75,13 +75,14 @@ def _run_case(
     kv_lens: tuple[int, ...],
     table_width: int,
     page_axis_gap: int,
+    num_heads: int = 8,
+    use_graph: bool = False,
 ) -> None:
     if dtype == torch.float8_e4m3fn and not _is_ascend_950():
         pytest.skip("FLOAT8_E4M3FN MsaIndexScore requires Ascend 950")
 
     generator = torch.Generator().manual_seed(2026)
     total_q = sum(q_lens)
-    num_heads = 8
     head_dim = 128
     required_blocks = max(math.ceil(length / BLOCK_SIZE) for length in kv_lens)
     assert required_blocks <= table_width
@@ -137,19 +138,34 @@ def _run_case(
         )
     )
 
-    actual = torch.ops._C_ascend.npu_msa_index_score(
-        query,
-        key,
-        block_table.npu(),
-        start_loc.npu(),
-        atten_mask=atten_mask,
-        actual_seq_qlen=actual_seq_qlen.npu(),
-        actual_seq_klen=actual_seq_klen.npu(),
-        layout_key="BBND",
-        sparse_mode=3,
-        init_blocks=0,
-        local_blocks=0,
-    )
+    block_table_device = block_table.npu()
+    start_loc_device = start_loc.npu()
+    actual_seq_qlen_device = actual_seq_qlen.npu()
+    actual_seq_klen_device = actual_seq_klen.npu()
+
+    def run_operator():
+        return torch.ops._C_ascend.npu_msa_index_score(
+            query,
+            key,
+            block_table_device,
+            start_loc_device,
+            atten_mask=atten_mask,
+            actual_seq_qlen=actual_seq_qlen_device,
+            actual_seq_klen=actual_seq_klen_device,
+            layout_key="BBND",
+            sparse_mode=3,
+            init_blocks=0,
+            local_blocks=0,
+        )
+
+    actual = run_operator()
+    if use_graph:
+        torch.npu.synchronize()
+        graph = torch.npu.NPUGraph()
+        with torch.npu.graph(graph):
+            actual = run_operator()
+        for _ in range(2):
+            graph.replay()
     torch.npu.synchronize()
 
     actual_cpu = actual.float().cpu()
@@ -192,3 +208,28 @@ def test_msa_index_score_matches_cpu_golden(
     page_axis_gap: int,
 ) -> None:
     _run_case(dtype, q_lens, kv_lens, table_width, page_axis_gap)
+
+
+@pytest.mark.parametrize(
+    ("q_lens", "kv_lens", "table_width", "page_axis_gap"),
+    [
+        pytest.param((1,), (4,), 275, 1, id="decode-wide-invalid-tail"),
+        pytest.param((1,) * 4, (35200, 16641, 4097, 129), 275, 2, id="decode-b4-uneven-kv-strided"),
+        pytest.param((1,) * 32, tuple(128 * (1 + i * 8) + 1 for i in range(32)), 275, 1, id="decode-b32-balance"),
+        pytest.param((1, 0, 1, 1), (35200, 0, 0, 129), 275, 1, id="decode-empty-requests"),
+        pytest.param((33, 1), (4097, 35200), 275, 1, id="prefill-multiple-m-tiles"),
+    ],
+)
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("use_graph", [False, True], ids=["eager", "aclgraph"])
+@torch.inference_mode()
+def test_msa_index_score_decode_pipeline_matches_cpu_golden(
+    dtype: torch.dtype,
+    q_lens: tuple[int, ...],
+    kv_lens: tuple[int, ...],
+    table_width: int,
+    page_axis_gap: int,
+    use_graph: bool,
+) -> None:
+    # Four index heads match MiniMax-M3/M3.1 and exercise short M tiles.
+    _run_case(dtype, q_lens, kv_lens, table_width, page_axis_gap, num_heads=4, use_graph=use_graph)
