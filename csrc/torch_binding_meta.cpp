@@ -6,6 +6,7 @@
 #include <torch_npu/csrc/framework/OpCommand.h>
 #include <torch_npu/csrc/npu/Module.h>
 #include "utils.h"
+#include "attention/generic_block_sparse_attention/generic_block_sparse_attention_meta.h"
 
 /*
  * How to write a meta implementation for a custom operator (meta kernel):
@@ -1876,6 +1877,8 @@ TORCH_LIBRARY_IMPL_EXPAND(CONCAT(_C, _ascend), Meta, ops) {
     ops.impl("npu_k2q_csr", &vllm_ascend::meta::npu_k2q_csr_meta);
     ops.impl("npu_sparse_attention_score_prefill",
              &vllm_ascend::meta::npu_sparse_attention_score_prefill_meta);
+    ops.impl("npu_generic_block_sparse_attention_metadata", &vllm_ascend::meta::npu_generic_block_sparse_attention_metadata_meta);
+    ops.impl("npu_generic_block_sparse_attention", &vllm_ascend::meta::npu_generic_block_sparse_attention_meta);
     ops.impl("npu_msa_index_score", &vllm_ascend::meta::npu_msa_index_score_meta);
     ops.impl("npu_kv_quant_sparse_flash_attention_vllm",
              &vllm_ascend::meta::npu_kv_quant_sparse_flash_attention_vllm_meta);

@@ -126,6 +126,7 @@ def _configure_backend(
 
             incompatible_ops = [
                 "TopKV2",  # minimax-m3 910C
+                # Match the GE op / JSON name, including the bundled _C_ascend GBSA.
                 "GenericBlockSparseAttention",  # minimax-m3 910C
                 "QuantBatchMatmulV3",  # glm5.2 910C
                 "TransposeQuantBatchMatMul",  # dsv4 950

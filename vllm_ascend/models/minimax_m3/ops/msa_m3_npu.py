@@ -176,7 +176,7 @@ def _run_generic_block_sparse_attention(
     dequant_scale: torch.Tensor | None = None,
     gbsa_metadata_cache: dict[tuple[Any, ...], torch.Tensor] | None = None,
 ) -> torch.Tensor:
-    """Run MiniMax-M3 sparse attention through CANN Ops GBSA."""
+    """Run MiniMax-M3 sparse attention through the bundled GBSA operators."""
     del dequant_scale
     topk_idx = topk_idx.to(dtype=torch.int32).contiguous()
     select_num_idx = select_num_idx.to(dtype=torch.int32).contiguous()
@@ -196,10 +196,9 @@ def _run_generic_block_sparse_attention(
         raise TypeError("MiniMax-M3 sparse attention requires Q, K, and V to have the same dtype")
 
     block_shape = [1, block_size]
-    from cann_ops_transformer.ops import (  # type: ignore[import-not-found]  # noqa: PLC0415
-        generic_block_sparse_attention,
-        generic_block_sparse_attention_metadata,
-    )
+    enable_custom_op()
+    generic_block_sparse_attention = torch.ops._C_ascend.npu_generic_block_sparse_attention
+    generic_block_sparse_attention_metadata = torch.ops._C_ascend.npu_generic_block_sparse_attention_metadata
 
     # Opt-in only from the A3 model's uniform-decode metadata builder. Direct
     # callers and prefill must not assume that layer-dependent counts match.

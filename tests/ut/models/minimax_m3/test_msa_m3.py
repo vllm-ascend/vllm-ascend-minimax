@@ -5,10 +5,9 @@
 from __future__ import annotations
 
 import inspect
-import sys
 from dataclasses import dataclass
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -71,10 +70,11 @@ from vllm_ascend.utils import AscendDeviceType
 def mock_gbsa_ops(monkeypatch: pytest.MonkeyPatch) -> tuple[MagicMock, MagicMock]:
     gbsa_metadata_op = MagicMock()
     gbsa_attention_op = MagicMock()
-    gbsa_ops_module = ModuleType("cann_ops_transformer.ops")
-    gbsa_ops_module.generic_block_sparse_attention_metadata = gbsa_metadata_op  # type: ignore[attr-defined]
-    gbsa_ops_module.generic_block_sparse_attention = gbsa_attention_op  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "cann_ops_transformer.ops", gbsa_ops_module)
+    monkeypatch.setattr(msa_m3_npu_module, "enable_custom_op", MagicMock(return_value=True))
+    monkeypatch.setattr(
+        torch.ops._C_ascend, "npu_generic_block_sparse_attention_metadata", gbsa_metadata_op, raising=False
+    )
+    monkeypatch.setattr(torch.ops._C_ascend, "npu_generic_block_sparse_attention", gbsa_attention_op, raising=False)
     return gbsa_metadata_op, gbsa_attention_op
 
 
