@@ -1,6 +1,5 @@
 from unittest.mock import MagicMock, patch
 
-import pytest
 import torch
 from vllm.model_executor.layers.linear import LinearBase
 from vllm.model_executor.layers.quantization import get_quantization_config
@@ -143,24 +142,3 @@ class TestAscendModelOptMxFp8Config(TestBase):
     def test_get_min_capability_is_not_available_on_ascend(self):
         with self.assertRaises(NotImplementedError):
             AscendModelOptMxFp8Config.get_min_capability()
-
-    def test_mixed_quantization_metadata_is_preserved(self):
-        config = AscendModelOptMxFp8Config.from_config(
-            {
-                "quant_method": "mxfp8",
-                "moe_quant_algo": "NVFP4",
-                "moe_quant_format": "nvfp4-pack-quantized",
-                "group_size": 16,
-                "weight_block_size": [1, 32],
-            }
-        )
-        self.assertEqual(config.moe_quant_algo, "NVFP4")
-        self.assertEqual(config.moe_group_size, 16)
-        self.assertEqual(config.weight_block_size, [1, 32])
-        with pytest.raises(ValueError, match="cannot use the Ascend MXFP8 MoE method"):
-            config.get_quant_method(torch.nn.Module(), "model.layers.3.block_sparse_moe")
-
-    def test_unsupported_expert_format_is_rejected(self):
-        for changes in ({"moe_quant_algo": "INT4"}, {"moe_quant_algo": "NVFP4", "group_size": 32}):
-            with pytest.raises(ValueError):
-                AscendModelOptMxFp8Config.from_config({"quant_method": "mxfp8", **changes})

@@ -127,28 +127,6 @@ def _make_decoder_layer(*, use_sequence_parallel: bool, is_moe: bool = True) -> 
 
 
 class TestMiniMaxM3Modeling(unittest.TestCase):
-    def test_nvfp4_packed_checkpoint_name_reaches_tagged_parameter(self) -> None:
-        model = MiniMaxM3Model.__new__(MiniMaxM3Model)
-        nn.Module.__init__(model)
-        model.config = PretrainedConfig(num_local_experts=1)
-        model.experts = nn.Module()
-        model.experts.routed_experts = nn.Module()
-        param = nn.Parameter(torch.zeros(1, 32, 16, dtype=torch.uint8), requires_grad=False)
-        param.is_nvfp4_packed = True
-        param.weight_loader = Mock(return_value=True)
-        model.experts.routed_experts.register_parameter("w13_weight", param)
-        model.get_expert_mapping = Mock(return_value=[("experts.routed_experts.w13_", "experts.0.w1.", 0, "w1")])
-        weight = torch.ones(16, 16, dtype=torch.uint8)
-        with (
-            patch("vllm_ascend.models.minimax_m3.minimax_m3.get_spec_layer_idx_from_weight_name", return_value=None),
-            patch("vllm_ascend.models.minimax_m3.minimax_m3.is_pp_missing_parameter", return_value=False),
-        ):
-            loaded = model.load_weights([("experts.0.w1.weight_packed", weight)])
-        self.assertEqual(loaded, {"experts.routed_experts.w13_weight"})
-        param.weight_loader.assert_called_once_with(
-            param, weight, "experts.routed_experts.w13_weight", shard_id="w1", expert_id=0, return_success=True
-        )
-
     @patch("vllm_ascend.models.minimax_m3.minimax_m3.sp_shard")
     @patch("vllm_ascend.models.minimax_m3.minimax_m3.sp_reduce_scatter")
     def test_decoder_enters_sequence_parallel(

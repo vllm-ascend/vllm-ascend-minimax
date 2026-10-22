@@ -1856,46 +1856,6 @@ Please refer to the [Feature Matrix](../../user_guide/support_matrix/feature_mat
 
 ## 10 FAQ
 
-### M3.1 Flash MXFP8/NVFP4 BF16 compatibility
-
-For initial service bring-up on devices without native MXFP8 computation,
-`additional_config.modelopt_bf16_compat=true` enables an explicit weight-only
-compatibility path. It supports MXFP8 E4M3 linear weights with uint8 E8M0 scales
-and `weight_block_size=[1,32]`, plus CT-style `moe_quant_algo=NVFP4`,
-`moe_quant_format=nvfp4-pack-quantized`, and `group_size=16` experts.
-NVFP4 experts use low-nibble-first uint8 packing, E4M3 group scales, and
-FP32 per-projection `weight_global_scale` divisors. Gate and up global scales
-are kept separately. Other layouts must be adapted explicitly.
-
-```bash
-VLLM_BATCH_INVARIANT=1 vllm serve /path/to/MiniMax-M3.1-Flash \
-  --dtype bfloat16 --enforce-eager \
-  --additional-config '{"modelopt_bf16_compat":true,"enable_fused_mc2":0,"enable_cpu_binding":false}' \
-  --tensor-parallel-size 8 \
-  --max-model-len 8192 --max-num-seqs 2 \
-  --kv-cache-memory-bytes 2147483648
-```
-
-This command does not enable DSpark or any speculative decoder. For a
-configuration-only smoke test, add `--load-format dummy`; this still allocates
-model tensors and executes NPU operators. Random outputs do not measure model
-quality or prove that a future checkpoint's names and layout are compatible.
-
-Linear weights are expanded to BF16 once at load. Expert weights remain packed
-between calls; each grouped matmul expands its local projection to BF16 in
-temporary HBM. Activations are not quantized using `input_global_scale` in this
-weight-only mode. This increases temporary memory and latency and is not a
-native low-bit performance implementation. Use eager execution, BF16, no EPLB,
-no LoRA, and no fused MC2. TP reduction shards must align to 32 elements for MXFP8 and
-16 for NVFP4. Measure available HBM before increasing cache size or concurrency.
-
-The smoke environment can use `VLLM_BATCH_INVARIANT=1` to bypass unavailable
-custom normalization kernels. This setting also changes other execution paths;
-validation with it does not validate the default kernel configuration. Real
-checkpoint loading and model quality still require separate validation.
-When sharing devices with an existing HCCL service, reserve a separate
-`HCCL_NPU_SOCKET_PORT_RANGE` for the new service to avoid EI0020 port conflicts.
-
 - **Q: How can I reinstall vLLM Ascend?**
 
   A: Use the following command to reinstall vLLM Ascend and build it with the dependencies from the current Python environment:
