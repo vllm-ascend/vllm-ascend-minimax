@@ -1368,6 +1368,12 @@ class MiniMaxM3Model(nn.Module, EagleModelMixin):
                     is_expert_weight = True
                     name_mapped = name.replace(weight_name, param_name)
 
+                    if name_mapped.endswith("weight_packed") and name_mapped not in params_dict:
+                        packed_name = name_mapped.removesuffix("_packed")
+                        packed_param = params_dict.get(packed_name)
+                        if packed_param is not None and getattr(packed_param, "is_nvfp4_packed", False):
+                            name_mapped = packed_name
+
                     if is_pp_missing_parameter(name_mapped, self):
                         mark_skipped("pp_missing")
                         break
@@ -1405,6 +1411,7 @@ class MiniMaxM3Model(nn.Module, EagleModelMixin):
                         mark_skipped("pp_missing")
                         continue
                     if name not in params_dict:
+                        logger.warning("MiniMax-M3 checkpoint tensor has no matching parameter: %s", name)
                         mark_skipped("missing_param")
                         continue
 

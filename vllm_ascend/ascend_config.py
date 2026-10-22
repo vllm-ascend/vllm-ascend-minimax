@@ -605,6 +605,13 @@ class AscendConfig:
     mc2_comm_alg: Literal["", "fullmesh", "hierarchy", "fullmesh_v2"] = ""
 
     # ---- A-family (envs fallback): default = envs module value, before-validator injects ----
+    modelopt_bf16_compat: bool = False
+    """Opt-in eager BF16 computation for serialized MXFP8/NVFP4 checkpoints.
+
+    Expands linears once and experts per projection. Trades startup memory,
+    temporary HBM, and latency for operation without native FP8/FP4 kernels.
+    """
+
     enable_fused_mc2: int = 0
     enable_mlapo: bool = True
     # When True, keep MLAPO prefill weights on NPU instead of freeing them
