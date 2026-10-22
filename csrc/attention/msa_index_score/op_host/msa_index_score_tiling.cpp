@@ -194,7 +194,7 @@ ge::graphStatus ParseAndCheck(gert::TilingContext *context, MsaIndexScoreInfo &i
     const gert::StorageShape *actualSeqKlenShape = context->GetOptionalInputShape(MSA_IDX_ACTUAL_SEQ_KLEN);
     OP_CHECK_IF(actualSeqKlenShape == nullptr, OP_LOGE(context, "actual_seq_klen is required."),
                 return ge::GRAPH_FAILED);
-    const gert::StorageShape *startLocShape = context->GetInputShape(MSA_IDX_START_LOC);
+    const gert::StorageShape *startLocShape = context->GetRequiredInputShape(MSA_IDX_START_LOC);
     OP_CHECK_NULL_WITH_CONTEXT(context, startLocShape);
 
     const gert::Shape &q = queryShape->GetStorageShape();
