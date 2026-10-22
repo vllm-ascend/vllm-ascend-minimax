@@ -10,7 +10,11 @@ import torch_npu  # noqa: F401
 
 from vllm_ascend.utils import bootstrap_custom_op_env
 
+# CANN-generated direct-kernel libraries query the SoC during import.
+# Initialize the available NPU first; Meta-only CPU checks need no device.
 bootstrap_custom_op_env(include_vendor_lib=True)
+if torch.npu.is_available():
+    torch.npu.init()
 import vllm_ascend.vllm_ascend_C  # noqa: E402,F401
 
 
@@ -173,3 +177,30 @@ def test_gbsa_graph_replay_changed_inputs(q_len):
         graph.replay()
         torch.npu.synchronize()
         torch.testing.assert_close(out, eager, atol=1e-2, rtol=2e-2)
+
+
+@pytest.mark.skipif(not torch.npu.is_available(), reason="requires a free Ascend NPU")
+@pytest.mark.parametrize("q_len", [1, 4])
+def test_gbsa_model_metadata_reuse(q_len):
+    # Match plugin startup order when running without the full E2E conftest.
+    import vllm_ascend.ops  # noqa: F401
+    from vllm_ascend.models.minimax_m3.ops.msa_m3_npu import _run_generic_block_sparse_attention
+
+    inputs, expected = _make_case(torch.bfloat16, (q_len, q_len), (257, 383), 1)
+    q, k, v, idx, count, table, cu_q, used_kv = inputs
+    cache = {}
+    kwargs = dict(num_kv_heads=1, sm_scale=1 / math.sqrt(q.shape[-1]), block_size=128, max_query_len=q_len)
+    first = _run_generic_block_sparse_attention(
+        q, k, v, idx, table, count, cu_q, used_kv, gbsa_metadata_cache=cache, **kwargs
+    )
+    torch.testing.assert_close(first.float().cpu(), expected, atol=1e-2, rtol=2e-2)
+    assert len(cache) == 1
+    schedule = next(iter(cache.values()))
+    next_q = q * 0.75
+    cached = _run_generic_block_sparse_attention(
+        next_q, k, v, idx, table, count, cu_q, used_kv, gbsa_metadata_cache=cache, **kwargs
+    )
+    fresh = _run_generic_block_sparse_attention(next_q, k, v, idx, table, count, cu_q, used_kv, **kwargs)
+    torch.npu.synchronize()
+    torch.testing.assert_close(cached, fresh, atol=1e-2, rtol=2e-2)
+    assert next(iter(cache.values())) is schedule

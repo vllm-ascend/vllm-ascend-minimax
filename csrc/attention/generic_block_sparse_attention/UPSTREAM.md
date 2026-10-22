@@ -29,6 +29,32 @@ Upstream documentation is retained for the operator contract. Upstream's separat
 `torch_extension` package, examples, and tests are not installed by this port;
 repository tests cover the new dispatcher and model wiring.
 
+## Startup and standalone use
+
+Rebuild and reinstall vllm-ascend after checking out this change; changing Python
+source alone does not replace the compiled operators. The normal custom-op build
+lists include both operators, including metadata's AICPU registration and library.
+The separate `cann_ops_transformer` Python package is not needed for this path;
+the base CANN runtime/toolkit is still required.
+
+Register the bundled OPP path before initializing the NPU runtime. Existing vLLM
+platform setup calls `bootstrap_custom_op_env()` for this purpose. Standalone
+scripts should use this order:
+
+```python
+import torch
+import torch_npu
+from vllm_ascend.utils import bootstrap_custom_op_env
+
+bootstrap_custom_op_env(include_vendor_lib=True)
+torch.npu.init()
+import vllm_ascend.vllm_ascend_C
+```
+
+Restart an already initialized process after rebuilding. Updating an environment
+variable after runtime initialization can leave the previous tiling provider active,
+even if ACLNN symbol lookup finds the new custom API library.
+
 ## Static kernel blacklist
 
 Keep the underlying GE/ACLNN name `GenericBlockSparseAttention` unchanged.
@@ -40,3 +66,23 @@ npugraph_ex matches substrings of generated JSON filenames, not PyTorch's
 The blacklist intentionally prevents this operator from static-kernel
 recompilation; it does not disable ACL Graph capture/replay of the ACLNN operator.
 A full model static/super-kernel startup still needs separate NPU validation.
+
+## Focused validation
+
+Run the numerical, Meta, graph-replay, and model metadata-reuse tests with:
+
+```bash
+pytest -q tests/e2e/pull_request/one_card/test_generic_block_sparse_attention.py
+```
+
+The standalone smoke below runs GBSA plus a vector add through npugraph_ex,
+checks output after input changes, and requires GBSA runtime JSONs to appear in
+the blacklist directory. Repeat with query length 1/4 and with/without
+`--super-kernel`. Use a fresh process and output directory for each case.
+The smoke explicitly disables `force_eager` because it owns graph capture;
+it does not validate vLLM's outer graph lifecycle or full model startup.
+
+```bash
+python tests/e2e/pull_request/one_card/gbsa_static_kernel_smoke.py \
+  --query-len 4 --super-kernel --output-dir "$PWD/gbsa-static-q4"
+```
