@@ -31,6 +31,10 @@ For multi-node deployment, verify the communication environment by following [Ve
 
 ## 4 Installation
 
+For the private MiniMax-M3.1-Flash A3 integration snapshot, see the
+[source reproduction notes](MiniMax-M3-private-reproduction.md) for pinned
+source/native identities, build requirements, and the A5 draft-patch boundary.
+
 ### 4.1 Docker Image Installation
 
 You can use the official all-in-one Docker image. For the available image tags and published versions, refer to [Using Docker](../../getting_started/installation.md#installation-prebuilt-image).
