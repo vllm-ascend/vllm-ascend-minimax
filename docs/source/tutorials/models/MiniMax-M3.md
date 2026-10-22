@@ -1580,6 +1580,21 @@ MiniMax-M3 uses explicit thinking delimiters:
 - **Streaming**: Reasoning and content are streamed incrementally via `DeltaMessage.reasoning` and `DeltaMessage.content` token-by-token.
 - **Token counting**: Reasoning tokens inside `<mm:think>` blocks are correctly counted.
 
+#### 6.2.4 MiniMax-M3.1 Adaptive Template
+
+MiniMax-M3.1's checkpoint template uses adaptive thinking and accepts
+`reasoning_effort` in chat completion requests, rendering it as
+`<effort>...</effort>`. Use the checkpoint's own template and keep
+`--reasoning-parser minimax_m3`.
+
+For example, add `"reasoning_effort": "high"` to the request. The legacy
+`thinking_mode="enabled"` or `"disabled"` option does not force thinking on
+or off with this template. The compatibility patch prevents a leftover
+`thinking_mode="enabled"` from making the parser assume a prefilled marker.
+It also keeps thinking markers in template instructions or earlier turns
+from disabling reasoning extraction for the next adaptive response.
+Older MiniMax-M3 templates retain their thinking-mode behavior.
+
 ### 6.3 Tool Call Parser
 
 MiniMax-M3 uses a namespace-delimited XML format for tool calls. Enable it with `--tool-parser minimax_m3`.

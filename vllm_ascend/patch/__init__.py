@@ -262,6 +262,24 @@
 #       Remove this patch and its platform import once all supported vLLM
 #       release tags and verified main pins include the upstream fix.
 #
+# ** File: platform/patch_minimax_m31_reasoning.py **
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#   1. `vllm.reasoning.minimax_m3_reasoning_parser.MiniMaxM3ReasoningParser`
+#    Why:
+#       vLLM v0.30 assumes thinking_mode=enabled prefills a thinking marker.
+#       M3.1's adaptive-only effort template does not. Historical end markers
+#       also make the composed streaming parser skip a new adaptive turn.
+#    How:
+#       Keep the original parser registration and wrap its constructor and
+#       reasoning-end check. Adaptive-only effort templates start outside
+#       reasoning; a bare MiniMax assistant prefix starts a fresh turn.
+#       Legacy M3 thinking switches and request kwargs remain unchanged.
+#    Related PR (if no, explain why):
+#       No upstream PR yet; this is a release-local compatibility fix.
+#    Future Plan:
+#       Remove the patch and platform import once all supported vLLM versions
+#       include both the adaptive-template and assistant-prefix fixes.
+#
 # ** 7a. File: platform/patch_glm5next_config.py**
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 #   1. `vllm.transformers_utils.config._CONFIG_REGISTRY`
