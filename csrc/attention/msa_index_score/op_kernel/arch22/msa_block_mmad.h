@@ -267,6 +267,86 @@ public:
         l0CListId_ = (l0CListId_ + 1 < L0C_STAGES) ? (l0CListId_ + 1) : 0;
     }
 
+    // Q 一次进 L0A。只给 headDim<=L1_K 的流水路径用，调用方保证 qResident。
+    __aicore__ inline void LoadQ(const AscendC::GlobalTensor<ElementA>& gmA, const LayoutA& layoutA,
+                                 const Catlass::GemmCoord& actualShape)
+    {
+        const uint32_t mRound = RoundUp<L1AAlignHelper::M_ALIGNED>(actualShape.m());
+        auto layoutAInL1 = LayoutAInL1::template MakeLayout<ElementA>(L1_M, actualShape.k());
+        auto layoutTileA = layoutA.GetTileLayout(Catlass::MakeCoord(actualShape.m(), actualShape.k()));
+        const uint32_t kActual = Min(actualShape.k(), L1_K);
+        AscendC::SetFlag<AscendC::HardEvent::MTE1_MTE2>(l1AEvent_);
+        AscendC::WaitFlag<AscendC::HardEvent::MTE1_MTE2>(l1AEvent_);
+        copyGmToL1A_(l1ATensor_, gmA, layoutAInL1, layoutTileA);
+        AscendC::SetFlag<AscendC::HardEvent::MTE2_MTE1>(l1AEvent_);
+        AscendC::WaitFlag<AscendC::HardEvent::MTE2_MTE1>(l1AEvent_);
+        AscendC::SetFlag<AscendC::HardEvent::M_MTE1>(l0AEventList_[L0A_RESIDENT_ID]);
+        AscendC::WaitFlag<AscendC::HardEvent::M_MTE1>(l0AEventList_[L0A_RESIDENT_ID]);
+        LayoutAInL0 layoutAInL0 = LayoutAInL0::template MakeLayout<ElementA>(mRound, kActual);
+        copyL1ToL0A_(l0ATensorList_[L0A_RESIDENT_ID], l1ATensor_, layoutAInL0, layoutAInL1);
+        AscendC::SetFlag<AscendC::HardEvent::MTE1_M>(l0AEventList_[L0A_RESIDENT_ID]);
+        AscendC::WaitFlag<AscendC::HardEvent::MTE1_M>(l0AEventList_[L0A_RESIDENT_ID]);
+    }
+
+    // 只把这一页 K 发到下一块 L1，不等搬运结束。在飞页数不超过 STAGES。
+    __aicore__ inline void IssueK(const AscendC::GlobalTensor<ElementB>& gmB, const LayoutB& layoutB,
+                                  const Catlass::GemmCoord& actualShape)
+    {
+        const uint32_t slot = l1ListId_;
+        const uint32_t kActual = Min(actualShape.k(), L1_K);
+        AscendC::WaitFlag<AscendC::HardEvent::MTE1_MTE2>(l1BEventList_[slot]);
+        auto layoutBInL1 = LayoutBInL1::template MakeLayout<ElementB>(L1_K, L1_N);
+        auto layoutTileB = layoutB.GetTileLayout(Catlass::MakeCoord(kActual, actualShape.n()));
+        copyGmToL1B_(l1BTensorList_[slot], gmB, layoutBInL1, layoutTileB);
+        AscendC::SetFlag<AscendC::HardEvent::MTE2_MTE1>(l1BEventList_[slot]);
+        l1ListId_ = (slot + 1U < STAGES) ? (slot + 1U) : 0U;
+        ++kInflight_;
+    }
+
+    // 等最早发出的那页 K 进 L1，再做 L1→L0、MMA、fixpipe。Q 已在 L0A。
+    __aicore__ inline void ConsumeK(const AscendC::GlobalTensor<ElementC>& gmC, const LayoutC& layoutC,
+                                    const Catlass::GemmCoord& actualShape)
+    {
+        const uint32_t slot = (l1ListId_ + STAGES - kInflight_) % STAGES;
+        const uint32_t mRound = RoundUp<L1AAlignHelper::M_ALIGNED>(actualShape.m());
+        const uint32_t nRound = RoundUp<L1BAlignHelper::N_ALIGNED>(actualShape.n());
+        const uint32_t kActual = Min(actualShape.k(), L1_K);
+        auto layoutInL0C = LayoutCInL0::MakeLayoutInL0C(Catlass::MakeCoord(mRound, nRound));
+        auto layoutBInL1 = LayoutBInL1::template MakeLayout<ElementB>(L1_K, L1_N);
+        auto l0BTile = l0BTensorList_[l0BListId_];
+        LayoutBInL0 layoutBInL0 = LayoutBInL0::template MakeLayout<ElementB>(kActual, nRound);
+        AscendC::WaitFlag<AscendC::HardEvent::M_MTE1>(l0BEventList_[l0BListId_]);
+        AscendC::WaitFlag<AscendC::HardEvent::MTE2_MTE1>(l1BEventList_[slot]);
+        copyL1ToL0B_(l0BTile, l1BTensorList_[slot], layoutBInL0, layoutBInL1);
+        AscendC::SetFlag<AscendC::HardEvent::MTE1_MTE2>(l1BEventList_[slot]);
+        AscendC::SetFlag<AscendC::HardEvent::MTE1_M>(EVENT_ID0);
+        const uint32_t l0cRow = 0U;
+        const uint32_t l0cCol = 0U;
+        Catlass::MatrixCoord l0COffset{l0cRow, l0cCol};
+        auto l0CTile = l0CTensorList_[l0CListId_][layoutInL0C.GetOffset(l0COffset)];
+        AscendC::WaitFlag<AscendC::HardEvent::MTE1_M>(EVENT_ID0);
+        auto l0ATile = l0ATensorList_[L0A_RESIDENT_ID];
+        if constexpr (USE_UNIT_FLAG) {
+            tileMmad_(l0CTile, l0ATile, l0BTile, mRound, nRound, kActual, true, 0b11);
+        } else {
+            tileMmad_(l0CTile, l0ATile, l0BTile, mRound, nRound, kActual, true, 0);
+        }
+        AscendC::SetFlag<AscendC::HardEvent::M_MTE1>(l0BEventList_[l0BListId_]);
+        l0BListId_ = (l0BListId_ + 1U < L0B_STAGES) ? (l0BListId_ + 1U) : 0U;
+
+        LayoutC layoutBlock = layoutC.GetTileLayout(actualShape.GetCoordMN());
+        if constexpr (USE_UNIT_FLAG) {
+            copyL0CToGm_(gmC, l0CTensorList_[l0CListId_], layoutBlock, layoutInL0C, 0b11);
+        } else {
+            AscendC::SetFlag<AscendC::HardEvent::M_FIX>(l0CEventList_[l0CListId_]);
+            AscendC::WaitFlag<AscendC::HardEvent::M_FIX>(l0CEventList_[l0CListId_]);
+            copyL0CToGm_(gmC, l0CTensorList_[l0CListId_], layoutBlock, layoutInL0C);
+            AscendC::SetFlag<AscendC::HardEvent::FIX_M>(l0CEventList_[l0CListId_]);
+        }
+        l0CListId_ = (l0CListId_ + 1U < L0C_STAGES) ? (l0CListId_ + 1U) : 0U;
+        --kInflight_;
+    }
+
 private:
     AscendC::LocalTensor<ElementA> l1ATensor_;
     AscendC::LocalTensor<ElementB> l1BTensorList_[STAGES];
@@ -281,6 +361,7 @@ private:
     uint32_t l1ListId_{0};
     uint32_t l0BListId_{0};
     uint32_t l0CListId_{0};
+    uint32_t kInflight_{0};
     TileMmad tileMmad_;
     CopyGmToL1A copyGmToL1A_;
     CopyGmToL1B copyGmToL1B_;

@@ -89,8 +89,8 @@ public:
             gKeyFp_.SetGlobalBuffer(reinterpret_cast<__gm__ ElementQ *>(key));
         }
         if (IS_QUANT_V || tiling_->keyLayout == MSA_KEY_LAYOUT_TND) {
-            gKeyScratch_.SetGlobalBuffer(reinterpret_cast<__gm__ ElementQ *>(
-                reinterpret_cast<__gm__ float *>(workspace) + tiling_->kScratchOffsetElems));
+            gKeyScratch_.SetGlobalBuffer(reinterpret_cast<__gm__ ElementQ*>(reinterpret_cast<__gm__ float*>(workspace) +
+                                                                            tiling_->kScratchOffsetElems));
         }
         if (tiling_->keyLayout != MSA_KEY_LAYOUT_TND) {
             gBlockTable_.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(blockTable));
@@ -104,7 +104,7 @@ public:
 
         scheduler_.Init(tiling_->batch, tiling_->numQHeads, tiling_->maxBlocksPerBatch, tiling_->scoreBlockStride,
                         tiling_->sparseMode, tiling_->initBlocks, tiling_->localBlocks, tiling_->keyLayout,
-                        gActualSeqQlen_, gActualSeqKlen_, gStartLoc_);
+                        tiling_->kvChunks, gActualSeqQlen_, gActualSeqKlen_, gStartLoc_, true);
     }
 
     __aicore__ inline void Process()
@@ -139,9 +139,11 @@ private:
         MsaTask task;
         for (uint32_t taskIdx = coreIdx; taskIdx < totalTasks; taskIdx += coreNum) {
             scheduler_.Decode(taskIdx, task);
+            // block_table 按 256B 预取，盖住后续逐页 GetValue 的 HBM 延迟。
+            PreloadBlockTable(task);
             // 只对可见 S-tile 做 QKᵀ + 握手；因果不可见尾由 AIV 直接写 -inf，避免空转同步。
             bool needLoadQ = true;
-            for (uint32_t st = 0; st < task.numComputeSTiles; ++st) {
+            for (uint32_t st = task.sStileBegin; st < task.sStileEnd; ++st) {
                 const bool needKScratch = StileNeedsKScratch(task, st * MSA_BLOCKS_PER_STILE);
                 if (needKScratch) {
                     // MIX 1AIC:2AIV：AIV→AIC 的 0x2 flag 需两个 AIV 都 Set 后才放行。
@@ -172,22 +174,24 @@ private:
                                              Catlass::Arch::CrossCoreFlag &flagK2, Catlass::Arch::CrossCoreFlag &flagK3,
                                              uint32_t st)
     {
+        // The repository Catlass snapshot lacks the pipelined wait overload.
+        // Keep upstream's MTE2 wait semantics through AscendC directly.
         if constexpr (IS_QUANT_V) {
             const uint32_t slot = st % MSA_K_SCRATCH_STAGES_A2;
             if (slot == 0U) {
-                Catlass::Arch::CrossCoreWaitFlag(flagK0);
+                AscendC::CrossCoreWaitFlag<0x2, PIPE_MTE2>(flagK0.id);
             } else if (slot == 1U) {
-                Catlass::Arch::CrossCoreWaitFlag(flagK1);
+                AscendC::CrossCoreWaitFlag<0x2, PIPE_MTE2>(flagK1.id);
             } else if (slot == 2U) {
-                Catlass::Arch::CrossCoreWaitFlag(flagK2);
+                AscendC::CrossCoreWaitFlag<0x2, PIPE_MTE2>(flagK2.id);
             } else {
-                Catlass::Arch::CrossCoreWaitFlag(flagK3);
+                AscendC::CrossCoreWaitFlag<0x2, PIPE_MTE2>(flagK3.id);
             }
         } else {
             (void)flagK1;
             (void)flagK2;
             (void)flagK3;
-            Catlass::Arch::CrossCoreWaitFlag(flagK0);
+            AscendC::CrossCoreWaitFlag<0x2, PIPE_MTE2>(flagK0.id);
         }
     }
 
@@ -230,6 +234,22 @@ private:
         }
         const uint32_t seqRemain = static_cast<uint32_t>(task.kvLen) - seqTok;
         return seqRemain < MSA_BLOCK_SIZE ? seqRemain : MSA_BLOCK_SIZE;
+    }
+
+    /// PA block_table 一行可能有数百个 int32。dc_preload 每次 256B，在 QK 开始前发出。
+    __aicore__ inline void PreloadBlockTable(const MsaTask& task)
+    {
+        if (tiling_->keyLayout == MSA_KEY_LAYOUT_TND || task.sBlkEnd <= task.sBlkBegin) {
+            return;
+        }
+        const uint32_t nBlk = task.sBlkEnd - task.sBlkBegin;
+        const __gm__ int32_t* row = gBlockTable_.GetPhyAddr() +
+                                    static_cast<uint64_t>(task.batchIdx) * tiling_->maxBlocksPerBatch + task.sBlkBegin;
+        const uint32_t bytes = nBlk * static_cast<uint32_t>(sizeof(int32_t));
+        auto* base = reinterpret_cast<__gm__ uint64_t*>(const_cast<__gm__ int32_t*>(row));
+        for (uint32_t off = 0; off < bytes; off += 256U) {
+            dc_preload(base, static_cast<int64_t>(off));
+        }
     }
 
     __aicore__ inline uint64_t KeyBlockGmOffset(const MsaTask &task, uint32_t blk) const
@@ -433,22 +453,77 @@ private:
         const Catlass::GemmCoord shape{mActual, MSA_BLOCK_SIZE, headDim};
         const uint64_t qOffset = static_cast<uint64_t>(task.globalRowBase) * tiling_->strideQn;
         const uint32_t pageStride = MSA_BLOCK_SIZE * MSA_K_TILE;
+        // headDim<=128 时一页 K 正好一块 L1。先把本 stile 的页号收齐，再让最多 3 页 MTE2 在飞，
+        // GetValue 不再卡在每一页的 WaitFlag(MTE2) 前面。
+        // 满 128 行的 prefill 沿用原来的单页 BlockMmad。M=128 时 3 级预取更慢。
+        const bool pipeK = (headDim <= MSA_K_TILE) && (mActual > 0U) && (mActual <= 32U);
+        if (!pipeK) {
+            for (uint32_t j = 0; j < MSA_BLOCKS_PER_STILE; ++j) {
+                const uint32_t blk = blkBase + j;
+                if (blk >= task.visibleEndBlk) {
+                    break;
+                }
+                if (KeyBlockNeedsScratch(task, blk)) {
+                    const uint64_t scratchOff = kScratchBase + static_cast<uint64_t>(j) * pageStride;
+                    blockMmad(gQuery_[qOffset], layoutQ, gKeyScratch_[scratchOff], layoutKScratch,
+                              gWorkspace_[sBase + static_cast<uint64_t>(j) * MSA_BLOCK_SIZE], layoutS, shape,
+                              needLoadL1);
+                } else if constexpr (!IS_QUANT_V) {
+                    const uint64_t kOffset = KeyBlockGmOffset(task, blk);
+                    blockMmad(gQuery_[qOffset], layoutQ, gKeyFp_[kOffset], layoutKGm,
+                              gWorkspace_[sBase + static_cast<uint64_t>(j) * MSA_BLOCK_SIZE], layoutS, shape,
+                              needLoadL1);
+                }
+                needLoadL1 = false;
+            }
+            return;
+        }
 
+        uint64_t pageOff[MSA_BLOCKS_PER_STILE];
+        uint8_t pageScratch[MSA_BLOCKS_PER_STILE];
+        uint32_t nPage = 0;
         for (uint32_t j = 0; j < MSA_BLOCKS_PER_STILE; ++j) {
             const uint32_t blk = blkBase + j;
             if (blk >= task.visibleEndBlk) {
                 break;
             }
-            if (KeyBlockNeedsScratch(task, blk)) {
-                const uint64_t scratchOff = kScratchBase + static_cast<uint64_t>(j) * pageStride;
-                blockMmad(gQuery_[qOffset], layoutQ, gKeyScratch_[scratchOff], layoutKScratch,
-                          gWorkspace_[sBase + static_cast<uint64_t>(j) * MSA_BLOCK_SIZE], layoutS, shape, needLoadL1);
+            pageScratch[nPage] = KeyBlockNeedsScratch(task, blk) ? 1U : 0U;
+            if (pageScratch[nPage] != 0U) {
+                pageOff[nPage] = kScratchBase + static_cast<uint64_t>(j) * pageStride;
             } else if constexpr (!IS_QUANT_V) {
-                const uint64_t kOffset = KeyBlockGmOffset(task, blk);
-                blockMmad(gQuery_[qOffset], layoutQ, gKeyFp_[kOffset], layoutKGm,
-                          gWorkspace_[sBase + static_cast<uint64_t>(j) * MSA_BLOCK_SIZE], layoutS, shape, needLoadL1);
+                pageOff[nPage] = KeyBlockGmOffset(task, blk);
+            } else {
+                pageOff[nPage] = 0;
             }
-            needLoadL1 = false;
+            ++nPage;
+        }
+        if (nPage == 0U) {
+            return;
+        }
+        if (needLoadL1) {
+            blockMmad.LoadQ(gQuery_[qOffset], layoutQ, shape);
+        }
+        const uint32_t depth = (nPage < BlockMmad::STAGES) ? nPage : BlockMmad::STAGES;
+        for (uint32_t i = 0; i < depth; ++i) {
+            IssuePageK(blockMmad, pageScratch[i], pageOff[i], shape, layoutKScratch, layoutKGm);
+        }
+        for (uint32_t i = 0; i < nPage; ++i) {
+            blockMmad.ConsumeK(gWorkspace_[sBase + static_cast<uint64_t>(i) * MSA_BLOCK_SIZE], layoutS, shape);
+            const uint32_t nxt = i + depth;
+            if (nxt < nPage) {
+                IssuePageK(blockMmad, pageScratch[nxt], pageOff[nxt], shape, layoutKScratch, layoutKGm);
+            }
+        }
+    }
+
+    __aicore__ inline void IssuePageK(BlockMmad& blockMmad, uint8_t scratch, uint64_t off,
+                                      const Catlass::GemmCoord& shape, const LayoutK& layoutKScratch,
+                                      const LayoutK& layoutKGm)
+    {
+        if (scratch != 0U) {
+            blockMmad.IssueK(gKeyScratch_[off], layoutKScratch, shape);
+        } else if constexpr (!IS_QUANT_V) {
+            blockMmad.IssueK(gKeyFp_[off], layoutKGm, shape);
         }
     }
 
@@ -503,7 +578,7 @@ private:
                     ++tileSeq;
                 }
             } else {
-                for (uint32_t st = 0; st < task.numComputeSTiles; ++st) {
+                for (uint32_t st = task.sStileBegin; st < task.sStileEnd; ++st) {
                     if (StileNeedsKScratch(task, st * MSA_BLOCKS_PER_STILE)) {
                         IssueKGatherAndNotify(resource, task, st, coreKScratch, subIdx, subBlockNum, flagK0, flagK1,
                                               flagK2, flagK3);
@@ -515,9 +590,16 @@ private:
                     ++tileSeq;
                 }
             }
-            // 因果不可见尾：不握手，直接写 -inf（与 AIC 跳过这些 tile 对齐）。
+            // 因果不可见尾不握手。窄 score 仍逐 tile 写进暂存窗；宽 score 的 -inf 尾
+            // 按 chunk 连续写回，避免 8 列循环把墙钟拉到可见 KV 计算量的数倍。
+            if (epilogue.ScoreStaged()) {
+                if (task.writeTailFill) {
             for (uint32_t st = task.numComputeSTiles; st < task.numSTiles; ++st) {
                 epilogue.ProcessSTile(gWorkspace_[0], task, st * MSA_BLOCKS_PER_STILE);
+                    }
+                }
+            } else {
+                epilogue.FillInvalidTail(task);
             }
             epilogue.EndTask();
         }
