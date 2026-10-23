@@ -179,7 +179,13 @@ def _run_generic_block_sparse_attention(
 ) -> torch.Tensor:
     """Run MiniMax-M3 sparse attention through the bundled GBSA operators."""
     del dequant_scale
-    topk_idx = topk_idx.to(dtype=torch.int32).contiguous()
+    # GBSA's sparse token-band geometry requires ascending block IDs.
+    # Score-ordered top-k can place a partial causal block before full
+    # blocks, allowing its future/padded tokens into the attention result.
+    topk_idx = topk_idx.to(dtype=torch.int32)
+    invalid_block = torch.iinfo(torch.int32).max
+    topk_idx = topk_idx.masked_fill(topk_idx < 0, invalid_block).sort(dim=-1).values
+    topk_idx = topk_idx.masked_fill(topk_idx == invalid_block, -1).contiguous()
     select_num_idx = select_num_idx.to(dtype=torch.int32).contiguous()
     block_table = block_table.to(dtype=torch.int32).contiguous()
     cu_seqlens_q = cu_seqlens_q.to(dtype=torch.int64).contiguous()
