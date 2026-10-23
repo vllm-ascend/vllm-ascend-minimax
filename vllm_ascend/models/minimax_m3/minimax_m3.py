@@ -1278,36 +1278,55 @@ class MiniMaxM3Model(nn.Module, EagleModelMixin):
 
         params_dict = dict(self.named_parameters())
         loaded_params: set[str] = set()
+        loaded_tensors = 0
+        skipped_tensors = 0
+        skipped_reasons: dict[str, int] = {}
+
+        def mark_loaded(param_name: str) -> None:
+            nonlocal loaded_tensors
+            loaded_params.add(param_name)
+            loaded_tensors += 1
+
+        def mark_skipped(reason: str) -> None:
+            nonlocal skipped_tensors
+            skipped_tensors += 1
+            skipped_reasons[reason] = skipped_reasons.get(reason, 0) + 1
 
         for name, loaded_weight in weights:
             if name.startswith("model."):
                 name = name[len("model.") :]
             if "mtp." in name:
+                mark_skipped("mtp")
                 continue
             if "weight_scale_inv" in name:
                 name = name.replace("weight_scale_inv", "weight_scale")
             elif "scale_inv" in name:
                 name = name.replace("scale_inv", "scale")
             if "rotary_emb.inv_freq" in name:
+                mark_skipped("rotary_emb")
                 continue
 
             spec_layer = get_spec_layer_idx_from_weight_name(self.config, name)
             if spec_layer is not None:
+                mark_skipped("spec_decode")
                 continue  # skip spec decode layers for main model
 
             # Sparse layers fold index_q/index_k into fused qkv_proj (handled below).
             # Other index_* weights (e.g. index_v/index_o) load explicitly here.
             if ".index_" in name and ".index_q_proj" not in name and ".index_k_proj" not in name:
                 if name.endswith(".bias") and name not in params_dict:
+                    mark_skipped("missing_bias")
                     continue
                 if is_pp_missing_parameter(name, self):
+                    mark_skipped("pp_missing")
                     continue
                 if name not in params_dict:
+                    mark_skipped("missing_index_param")
                     continue
                 param = params_dict[name]
                 weight_loader = getattr(param, "weight_loader", default_weight_loader)
                 weight_loader(param, loaded_weight)
-                loaded_params.add(name)
+                mark_loaded(name)
                 continue
 
             for param_name, weight_name, shard_id in stacked_params_mapping:
@@ -1319,8 +1338,10 @@ class MiniMaxM3Model(nn.Module, EagleModelMixin):
                     continue
                 param_name_full = name.replace(weight_name, param_name)
                 if param_name_full.endswith(".bias") and param_name_full not in params_dict:
+                    mark_skipped("missing_bias")
                     continue
                 if is_pp_missing_parameter(param_name_full, self):
+                    mark_skipped("pp_missing")
                     continue
                 if param_name_full.endswith((".k_scale", ".v_scale")):
                     remapped_name = maybe_remap_kv_scale_name(param_name_full, params_dict)
@@ -1328,7 +1349,7 @@ class MiniMaxM3Model(nn.Module, EagleModelMixin):
                         param = params_dict[remapped_name]
                         weight_loader = getattr(param, "weight_loader", default_weight_loader)
                         weight_loader(param, loaded_weight)
-                        loaded_params.add(remapped_name)
+                        mark_loaded(remapped_name)
                         break
                 if param_name_full not in params_dict:
                     continue
@@ -1336,7 +1357,7 @@ class MiniMaxM3Model(nn.Module, EagleModelMixin):
                 param = params_dict[param_name_full]
                 weight_loader = param.weight_loader
                 weight_loader(param, loaded_weight, shard_id)
-                loaded_params.add(param_name_full)
+                mark_loaded(param_name_full)
                 break
             else:
                 is_expert_weight = False
@@ -1348,6 +1369,7 @@ class MiniMaxM3Model(nn.Module, EagleModelMixin):
                     name_mapped = name.replace(weight_name, param_name)
 
                     if is_pp_missing_parameter(name_mapped, self):
+                        mark_skipped("pp_missing")
                         break
                     if name_mapped not in params_dict:
                         continue
@@ -1363,22 +1385,27 @@ class MiniMaxM3Model(nn.Module, EagleModelMixin):
                         return_success=True,
                     )
                     if success:
-                        loaded_params.add(name_mapped)
+                        mark_loaded(name_mapped)
                         break
                 else:
                     if is_expert_weight:
+                        mark_skipped("nonlocal_or_unmapped_expert")
                         continue
 
                     if name.endswith(".bias") and name not in params_dict:
+                        mark_skipped("missing_bias")
                         continue
 
                     name = maybe_remap_kv_scale_name(name, params_dict)
                     if name is None:
+                        mark_skipped("kv_scale_remap_missing")
                         continue
 
                     if is_pp_missing_parameter(name, self):
+                        mark_skipped("pp_missing")
                         continue
                     if name not in params_dict:
+                        mark_skipped("missing_param")
                         continue
 
                     param = params_dict[name]
@@ -1386,7 +1413,7 @@ class MiniMaxM3Model(nn.Module, EagleModelMixin):
                     if getattr(weight_loader, "supports_moe_loading", False):
                         if loaded_weight.shape == param.shape:
                             default_weight_loader(param, loaded_weight)
-                            loaded_params.add(name)
+                            mark_loaded(name)
                             continue
                         raise ValueError(
                             f"FusedMoE parameter {name!r} reached the "
@@ -1396,7 +1423,15 @@ class MiniMaxM3Model(nn.Module, EagleModelMixin):
                             "mapping for this checkpoint weight instead."
                         )
                     weight_loader(param, loaded_weight)
-                    loaded_params.add(name)
+                    mark_loaded(name)
+        logger.warning(
+            "MiniMax M3 text load_weights loaded %d checkpoint tensors into "
+            "%d parameter names; skipped %d tensors by reason: %s",
+            loaded_tensors,
+            len(loaded_params),
+            skipped_tensors,
+            skipped_reasons,
+        )
         return loaded_params
 
 
@@ -1530,14 +1565,31 @@ class MiniMaxM3SparseForCausalLM(
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         loader = AutoWeightsLoader(self)
+        raw_tensors = 0
+        text_tensors = 0
+        skipped_multimodal_tensors = 0
 
         def text_weights() -> Iterable[tuple[str, torch.Tensor]]:
+            nonlocal raw_tensors, text_tensors, skipped_multimodal_tensors
             for name, weight in weights:
+                raw_tensors += 1
                 if "vision_tower" in name or "multi_modal_projector" in name or "patch_merge_mlp" in name:
+                    skipped_multimodal_tensors += 1
                     continue
+                text_tensors += 1
                 yield name, weight
 
-        return loader.load_weights(text_weights(), mapper=self.hf_to_vllm_mapper)
+        loaded_params = loader.load_weights(text_weights(), mapper=self.hf_to_vllm_mapper)
+        logger.warning(
+            "MiniMax M3 top-level load_weights saw %d checkpoint tensors, "
+            "passed %d text tensors, skipped %d multimodal tensors, "
+            "returned %d loaded parameter names",
+            raw_tensors,
+            text_tensors,
+            skipped_multimodal_tensors,
+            len(loaded_params),
+        )
+        return loaded_params
 
     def get_expert_mapping(self) -> list[tuple[str, str, int, str]]:
         return self.model.get_expert_mapping()
