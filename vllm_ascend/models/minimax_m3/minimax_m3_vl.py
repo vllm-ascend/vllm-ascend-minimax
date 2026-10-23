@@ -28,7 +28,6 @@ from vllm.distributed import (
     tensor_model_parallel_all_reduce,
     tensor_model_parallel_reduce_scatter,
 )
-from vllm.logger import logger
 from vllm.model_executor.layers.layernorm import GemmaRMSNorm
 from vllm.model_executor.models.interfaces import (
     MixtureOfExperts,
@@ -429,32 +428,4 @@ class MiniMaxM3SparseForConditionalGeneration(
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         loader = AutoWeightsLoader(self)
-        raw_tensors = 0
-        prefix_counts: dict[str, int] = {}
-
-        def counted_weights() -> Iterable[tuple[str, torch.Tensor]]:
-            nonlocal raw_tensors
-            for name, weight in weights:
-                raw_tensors += 1
-                if name.startswith("language_model."):
-                    bucket = "language_model"
-                elif name.startswith("vision_tower."):
-                    bucket = "vision_tower"
-                elif name.startswith("multi_modal_projector."):
-                    bucket = "multi_modal_projector"
-                elif name.startswith("patch_merge_mlp."):
-                    bucket = "patch_merge_mlp"
-                else:
-                    bucket = name.split(".", 1)[0]
-                prefix_counts[bucket] = prefix_counts.get(bucket, 0) + 1
-                yield name, weight
-
-        logger.warning("MiniMax M3 VL load_weights entered")
-        loaded_params = loader.load_weights(counted_weights(), mapper=self.hf_to_vllm_mapper)
-        logger.warning(
-            "MiniMax M3 VL load_weights saw %d checkpoint tensors by prefix %s; returned %d loaded parameter names",
-            raw_tensors,
-            prefix_counts,
-            len(loaded_params),
-        )
-        return loaded_params
+        return loader.load_weights(weights, mapper=self.hf_to_vllm_mapper)
