@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM Ascend project
 
-"""Validate and rename native BF16 DSpark weights without converting tensors."""
+"""Validate and rename native BF16/MXFP8 DSpark weights without converting tensors."""
 
 import ast
 import copy
@@ -16,6 +16,7 @@ import regex as re
 PREFIX = "language_model.model.dspark."
 ADAPTER_ARCHITECTURE = "DSparkMiniMaxDraftModel"
 MAX_SAFETENSORS_HEADER_BYTES = 10 * 1024 * 1024
+MXFP8_GROUP_SIZE = 32
 MINIMAX_M31_TARGET_LAYERS = (3, 17, 31, 45, 59)
 MINIMAX_M31_DRAFT_BLOCK_SIZE = 7
 MINIMAX_M31_DRAFT_WINDOW = 4096
@@ -84,20 +85,33 @@ def validate_header(header, config):
         if mapped_name in mapped:
             raise ValueError(f"Duplicate mapped tensor: {mapped_name}")
         mapped[mapped_name] = info
-    if set(mapped) != set(expected):
-        raise ValueError(
-            f"Tensor schema mismatch: missing={set(expected) - set(mapped)}, extra={set(mapped) - set(expected)}"
-        )
-    for name, shape in expected.items():
+    uses_mxfp8 = any(info["dtype"] == "F8_E4M3" for info in mapped.values())
+    quantized = {name: shape for name, shape in expected.items() if name.startswith("layers.") and len(shape) == 2}
+    scales = (
+        {
+            name.removesuffix("weight") + "weight_scale_inv": [
+                shape[0],
+                (shape[1] + MXFP8_GROUP_SIZE - 1) // MXFP8_GROUP_SIZE,
+            ]
+            for name, shape in quantized.items()
+        }
+        if uses_mxfp8
+        else {}
+    )
+    schema = set(expected) | set(scales)
+    if set(mapped) != schema:
+        raise ValueError(f"Tensor schema mismatch: missing={schema - set(mapped)}, extra={set(mapped) - schema}")
+    for name, shape in {**expected, **scales}.items():
         if list(mapped[name]["shape"]) != shape:
             raise ValueError(f"Tensor shape mismatch: {name}, {mapped[name]['shape']} != {shape}")
         dtype = mapped[name]["dtype"]
-        if dtype != "BF16":
-            raise ValueError(f"Expected native BF16 DSpark tensor, got {name}: {dtype}")
+        expected_dtype = "U8" if name in scales else "F8_E4M3" if uses_mxfp8 and name in quantized else "BF16"
+        if dtype != expected_dtype:
+            raise ValueError(f"Expected native {expected_dtype} DSpark tensor, got {name}: {dtype}")
     return mapped
 
 
-def iter_bf16_weights(weights, config):
+def iter_draft_weights(weights, config):
     # Keep header-only configuration preparation independent of Torch imports.
     import torch
 
@@ -110,15 +124,17 @@ def iter_bf16_weights(weights, config):
     for name, value in tensors.items():
         header[name] = {
             "shape": list(value.shape),
-            "dtype": "BF16" if value.dtype == torch.bfloat16 else str(value.dtype),
+            "dtype": {torch.bfloat16: "BF16", torch.float8_e4m3fn: "F8_E4M3", torch.uint8: "U8"}.get(
+                value.dtype, str(value.dtype)
+            ),
         }
     validate_header(header, config)
     for name, value in tensors.items():
-        yield map_weight_name(name), value
+        yield map_weight_name(name).replace("weight_scale_inv", "weight_scale"), value
 
 
 def read_draft_header(model_root):
-    """Read BF16 draft metadata without loading or converting weight tensors."""
+    """Read draft metadata without loading or converting weight tensors."""
     draft = Path(model_root) / "dspark"
     shards = sorted(draft.glob("*.safetensors"))
     if not shards:
@@ -140,7 +156,7 @@ def read_draft_header(model_root):
 
 
 def native_draft_config(source, header, draft_source=None):
-    """Normalize checkpoint DSpark settings for the native BF16 implementation.
+    """Normalize checkpoint DSpark settings for the native Ascend implementation.
 
     Some ModelSlim exports retain the DSpark weights but omit their config.
     Prefer dspark/config.json. The config-less fallback matches MiniMaxAI's
@@ -229,7 +245,25 @@ def native_draft_config(source, header, draft_source=None):
         }
     )
     config.pop("quantization_config", None)
-    validate_header(header, config)
+    mapped = validate_header(header, config)
+    if any(info["dtype"] == "F8_E4M3" for info in mapped.values()):
+        quant = {"quant_method": "ascend", "group_size": MXFP8_GROUP_SIZE}
+        projections = (
+            "self_attn.q_proj",
+            "self_attn.k_proj",
+            "self_attn.v_proj",
+            "self_attn.qkv_proj",
+            "self_attn.o_proj",
+            "mlp.gate_proj",
+            "mlp.up_proj",
+            "mlp.gate_up_proj",
+            "mlp.down_proj",
+        )
+        # DFlash offsets runtime attention names past the target's layers.
+        for layer in range(draft_layers):
+            for projection in projections:
+                quant[f"model.layers.{MINIMAX_M31_TARGET_LAYER_COUNT + layer}.{projection}.weight"] = "W8A8_MXFP8"
+        config["quantization_config"] = quant
     return config
 
 

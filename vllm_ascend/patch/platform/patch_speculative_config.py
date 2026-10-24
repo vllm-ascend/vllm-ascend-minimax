@@ -220,7 +220,9 @@ def _dspark_post_init(self):
         # weights after constructing its config from the parent checkpoint.
         self.draft_model_config.model = str(draft_root / "dspark")
         self.draft_model_config.model_weights = str(draft_root / "dspark")
-        self.draft_model_config.quantization = None
+        self.draft_model_config.quantization = (
+            "ascend" if getattr(self.draft_model_config.hf_config, "quantization_config", None) else None
+        )
     if self.use_dspark():
         draft_model_config = getattr(self, "draft_model_config", None)
         draft_hf_config = getattr(draft_model_config, "hf_config", None)
