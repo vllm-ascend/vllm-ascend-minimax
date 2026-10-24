@@ -152,7 +152,8 @@ RUN if [ "$BUILD_TYPE" = "daily" ] || [ "$BUILD_TYPE" = "release" ]; then \
 
 RUN source /usr/local/Ascend/ascend-toolkit/set_env.sh && \
     source /usr/local/Ascend/nnal/atb/set_env.sh && \
-    export LD_LIBRARY_PATH=/usr/local/Ascend/cann-9.2.0/aarch64-linux/devlib/linux/aarch64/:/usr/local/lib:$LD_LIBRARY_PATH && \
+    ARCH="$(uname -m)" && \
+    export LD_LIBRARY_PATH=/usr/local/Ascend/cann-9.2.0/${ARCH}-linux/devlib/linux/${ARCH}/:/usr/local/lib:$LD_LIBRARY_PATH && \
     git clone https://github.com/MinghuasLab/flash-attention-npu.git && \
     cd flash-attention-npu && \
     git checkout 9c9f00648fa150e84228a9b757990485fc670df3 && \
