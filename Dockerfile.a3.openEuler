@@ -157,6 +157,7 @@ RUN source /usr/local/Ascend/ascend-toolkit/set_env.sh && \
     cd flash-attention-npu && \
     git checkout 9c9f00648fa150e84228a9b757990485fc670df3 && \
     git submodule update --init --recursive && \
+    source /usr/local/Ascend/cann/set_env.sh && \
     python setup.py install
 
 CMD ["/bin/bash"]
