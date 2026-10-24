@@ -68,12 +68,12 @@ vllm serve /mnt/weight/minimax_m3dot1_w8a8_2 \
   --limit-mm-per-prompt '{"image":1,"video":0}' \
   --reasoning-parser minimax_m3 \
   --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}' \
-  --additional-config '{"enable_flashcomm1":true,"ascend_compilation_config":{"fuse_qknorm_rope":false,"fuse_norm_quant":false}}' \
+  --additional-config '{"enable_flashcomm1":true,"multistream_overlap_shared_expert":true,"enable_shared_expert_dp":true}' \
   --speculative-config '{"method":"dspark","num_speculative_tokens":7,"enforce_eager":true,"kv_cache_dtype":"bfloat16"}'
 ```
 
 `enforce_eager` 在上述 speculative config 中仅作用于草稿。服务参数明确使用
-DSpark、7 个推测 token，并关闭 `fuse_qknorm_rope`。
+DSpark、7 个推测 token；启用 DSpark 时，主模型自动跳过稀疏 QK norm/RoPE/cache 融合路径。
 无需提供额外 draft 路径，代码自动选择主模型目录中的 `dspark/`。
 关闭 hybrid KV cache manager，使草稿滑窗 cache 使用完整分配，保持 MiniMax
 indexer 的 128-token block；代价是草稿 cache 会占用更多内存。

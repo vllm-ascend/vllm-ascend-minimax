@@ -18,6 +18,7 @@ def make_layer():
     norm = SimpleNamespace(variance_epsilon=1e-6, weight=torch.zeros(128))
     return SimpleNamespace(
         fuse_qknorm_rope=True,
+        use_dspark=False,
         indexer_proj=None,
         head_dim=128,
         idx_head_dim=128,
@@ -31,7 +32,20 @@ def make_layer():
 
 @pytest.mark.parametrize(
     "unsupported",
-    [None, "disabled", "dtype", "cpu", "positions", "heads", "rope", "eps", "triton", "large_batch", "cache_dtype"],
+    [
+        None,
+        "disabled",
+        "dspark",
+        "dtype",
+        "cpu",
+        "positions",
+        "heads",
+        "rope",
+        "eps",
+        "triton",
+        "large_batch",
+        "cache_dtype",
+    ],
 )
 def test_fusion_guard(unsupported):
     layer = make_layer()
@@ -39,6 +53,8 @@ def test_fusion_guard(unsupported):
     positions = torch.zeros(4, dtype=torch.int64)
     if unsupported == "disabled":
         layer.fuse_qknorm_rope = False
+    elif unsupported == "dspark":
+        layer.use_dspark = True
     elif unsupported == "dtype":
         hidden.dtype = torch.float16
     elif unsupported == "cpu":

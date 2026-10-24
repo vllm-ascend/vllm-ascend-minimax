@@ -312,6 +312,7 @@ class MiniMaxM3SparseAttention(nn.Module, AttentionLayerBase):
         self.k_norm = GemmaRMSNorm(self.head_dim, eps=rms_norm_eps)
 
         vllm_config = get_current_vllm_config()
+        self.use_dspark = bool(vllm_config.speculative_config and vllm_config.speculative_config.use_dspark())
         self.fuse_qknorm_rope = get_ascend_config().ascend_compilation_config.fuse_qknorm_rope
         self.layer_name = f"{prefix}.attn"
         self.kv_cache_dtype, self.kv_cache_torch_dtype = _resolve_layer_kv_cache_dtypes(
@@ -487,6 +488,7 @@ class MiniMaxM3SparseAttention(nn.Module, AttentionLayerBase):
         max_fused_tokens = 512
         return (
             self.fuse_qknorm_rope
+            and not self.use_dspark
             and HAS_TRITON
             and hidden_states.shape[0] <= max_fused_tokens
             and hidden_states.device.type == "npu"

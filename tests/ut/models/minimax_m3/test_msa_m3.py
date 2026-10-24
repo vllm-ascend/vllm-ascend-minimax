@@ -1054,6 +1054,7 @@ def test_sparse_attention_uses_split_indexer_projection_when_quant_types_differ(
         variance_epsilon=kwargs.get("eps", 1e-6),
     )
     mock_get_vllm_config.return_value = SimpleNamespace(
+        speculative_config=None,
         model_config=SimpleNamespace(),
         compilation_config=SimpleNamespace(static_forward_context={}),
         scheduler_config=SimpleNamespace(max_num_batched_tokens=32),
