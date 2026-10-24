@@ -97,7 +97,6 @@ from vllm.v1.kv_cache_interface import (
     get_kv_quant_mode,
 )
 
-from vllm_ascend.ascend_config import get_ascend_config
 from vllm_ascend.device.device_op import DeviceOperator
 from vllm_ascend.models.common.ops.sequence_parallel import (
     sp_all_gather,
@@ -313,7 +312,6 @@ class MiniMaxM3SparseAttention(nn.Module, AttentionLayerBase):
 
         vllm_config = get_current_vllm_config()
         self.use_dspark = bool(vllm_config.speculative_config and vllm_config.speculative_config.use_dspark())
-        self.fuse_qknorm_rope = get_ascend_config().ascend_compilation_config.fuse_qknorm_rope
         self.layer_name = f"{prefix}.attn"
         self.kv_cache_dtype, self.kv_cache_torch_dtype = _resolve_layer_kv_cache_dtypes(
             cache_config,
@@ -429,8 +427,7 @@ class MiniMaxM3SparseAttention(nn.Module, AttentionLayerBase):
             )
 
         if (
-            not self.fuse_qknorm_rope
-            or get_ascend_device_type() == AscendDeviceType.A5
+            get_ascend_device_type() == AscendDeviceType.A5
             or main_qkv.device.type != "npu"
             or main_qkv.dtype != torch.bfloat16
             or positions.ndim != 1
@@ -487,8 +484,7 @@ class MiniMaxM3SparseAttention(nn.Module, AttentionLayerBase):
         # for larger batches where per-token programs become more expensive.
         max_fused_tokens = 512
         return (
-            self.fuse_qknorm_rope
-            and not self.use_dspark
+            not self.use_dspark
             and HAS_TRITON
             and hidden_states.shape[0] <= max_fused_tokens
             and hidden_states.device.type == "npu"

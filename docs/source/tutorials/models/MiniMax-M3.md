@@ -35,10 +35,6 @@ For the private MiniMax-M3.1-Flash A3 integration snapshot, see the
 [source reproduction notes](MiniMax-M3-private-reproduction.md) for pinned
 source/native identities, build requirements, and the A5 draft-patch boundary.
 
-For the private M3.1 Flash checkpoint with a native BF16 DSpark directory, see
-[BF16 DSpark deployment](MiniMax-M3-DSpark.md). The draft is integrated into the
-normal Ascend installation and needs no separate adapter or weight preparation.
-
 ### 4.1 Docker Image Installation
 
 You can use the official all-in-one Docker image. For the available image tags and published versions, refer to [Using Docker](../../getting_started/installation.md#installation-prebuilt-image).

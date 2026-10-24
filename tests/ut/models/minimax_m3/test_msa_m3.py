@@ -1012,8 +1012,7 @@ def test_scatter_index_cache_keeps_legacy_op_off_a5(_mock_device_type: MagicMock
     assert torch.equal(actual_updates, updates)
 
 
-@pytest.mark.parametrize("fuse_qknorm_rope", [False, True])
-@patch("vllm_ascend.models.minimax_m3.minimax_m3.get_ascend_config")
+@pytest.mark.parametrize("use_dspark", [False, True])
 @patch("vllm_ascend.models.minimax_m3.minimax_m3.logger.warning")
 @patch("vllm_ascend.models.minimax_m3.minimax_m3.AscendMiniMaxM3Indexer")
 @patch("vllm_ascend.models.minimax_m3.minimax_m3.AscendMiniMaxM3IndexerLinear")
@@ -1039,12 +1038,8 @@ def test_sparse_attention_uses_split_indexer_projection_when_quant_types_differ(
     mock_indexer_linear: MagicMock,
     mock_indexer: MagicMock,
     _mock_logger_warning: MagicMock,
-    mock_get_ascend_config: MagicMock,
-    fuse_qknorm_rope: bool,
+    use_dspark: bool,
 ) -> None:
-    mock_get_ascend_config.return_value = SimpleNamespace(
-        ascend_compilation_config=SimpleNamespace(fuse_qknorm_rope=fuse_qknorm_rope)
-    )
     mock_qkv_linear.return_value = SimpleNamespace(name="split_qkv")
     mock_fused_qkv_linear.return_value = SimpleNamespace(name="fused_qkv")
     mock_row_linear.return_value = SimpleNamespace(name="o_proj")
@@ -1054,7 +1049,7 @@ def test_sparse_attention_uses_split_indexer_projection_when_quant_types_differ(
         variance_epsilon=kwargs.get("eps", 1e-6),
     )
     mock_get_vllm_config.return_value = SimpleNamespace(
-        speculative_config=None,
+        speculative_config=SimpleNamespace(use_dspark=lambda: True) if use_dspark else None,
         model_config=SimpleNamespace(),
         compilation_config=SimpleNamespace(static_forward_context={}),
         scheduler_config=SimpleNamespace(max_num_batched_tokens=32),
@@ -1093,7 +1088,7 @@ def test_sparse_attention_uses_split_indexer_projection_when_quant_types_differ(
         },
     )
 
-    assert layer.fuse_qknorm_rope is fuse_qknorm_rope
+    assert layer.use_dspark is use_dspark
     assert layer._use_fused_qkv_indexer is False
     assert layer.qkv_proj.name == "split_qkv"
     assert layer.indexer_proj is split_indexer_proj

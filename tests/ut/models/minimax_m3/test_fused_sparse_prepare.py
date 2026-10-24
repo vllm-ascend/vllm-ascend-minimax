@@ -17,7 +17,6 @@ from vllm_ascend.models.minimax_m3.msa_m3 import (
 def make_layer():
     norm = SimpleNamespace(variance_epsilon=1e-6, weight=torch.zeros(128))
     return SimpleNamespace(
-        fuse_qknorm_rope=True,
         use_dspark=False,
         indexer_proj=None,
         head_dim=128,
@@ -34,7 +33,6 @@ def make_layer():
     "unsupported",
     [
         None,
-        "disabled",
         "dspark",
         "dtype",
         "cpu",
@@ -51,9 +49,7 @@ def test_fusion_guard(unsupported):
     layer = make_layer()
     hidden = SimpleNamespace(device=SimpleNamespace(type="npu"), dtype=torch.bfloat16, shape=(4, 128))
     positions = torch.zeros(4, dtype=torch.int64)
-    if unsupported == "disabled":
-        layer.fuse_qknorm_rope = False
-    elif unsupported == "dspark":
+    if unsupported == "dspark":
         layer.use_dspark = True
     elif unsupported == "dtype":
         hidden.dtype = torch.float16
