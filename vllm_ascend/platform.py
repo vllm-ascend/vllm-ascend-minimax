@@ -291,9 +291,10 @@ class NPUPlatform(Platform):
         from vllm.v1.attention.backend import AttentionType
 
         vllm_config = get_current_vllm_config_or_none()
+        # MiniMax on A5 uses CANN attention even when ecosystem FA3 is installed.
         if (
             backend_key == (False, False, False)
-            and get_ascend_device_type() in (AscendDeviceType.A2, AscendDeviceType.A3, AscendDeviceType.A5)
+            and get_ascend_device_type() in (AscendDeviceType.A2, AscendDeviceType.A3)
             and vllm_config is not None
             and vllm_config.model_config is not None
             and _uses_minimax_m3_flash_attention(vllm_config)

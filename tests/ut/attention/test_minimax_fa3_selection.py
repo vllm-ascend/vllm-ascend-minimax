@@ -42,7 +42,7 @@ def test_minimax_fa3_hardware_selection(device_type, installed, architecture):
         backend = NPUPlatform.get_attn_backend_cls(None, selector)
     if device_type == AscendDeviceType._310P:
         expected = "vllm_ascend._310p.attention.attention_v1.AscendAttentionBackend310"
-    elif installed and architecture != "Qwen3ForCausalLM":
+    elif device_type in (AscendDeviceType.A2, AscendDeviceType.A3) and installed and architecture != "Qwen3ForCausalLM":
         expected = "vllm_ascend.attention.flash_attention_v3.AscendFlashAttentionBackend"
     else:
         expected = "vllm_ascend.attention.attention_v1.AscendAttentionBackend"
