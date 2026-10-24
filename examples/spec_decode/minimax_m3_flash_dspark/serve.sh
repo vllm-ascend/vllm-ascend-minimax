@@ -28,5 +28,5 @@ exec vllm serve "$model_path" \
     --reasoning-parser minimax_m3 \
     --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}' \
     --additional-config '{"enable_flashcomm1":true,"multistream_overlap_shared_expert":true,"enable_shared_expert_dp":true}' \
-    --speculative-config '{"method":"dspark","num_speculative_tokens":7,"enforce_eager":true,"kv_cache_dtype":"bfloat16"}' \
+    --speculative-config '{"method":"dspark","num_speculative_tokens":7,"enforce_eager":true,"kv_cache_dtype":"bfloat16","draft_sample_method":"probabilistic"}' \
     "$@"
