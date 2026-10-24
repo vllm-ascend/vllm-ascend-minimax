@@ -707,6 +707,7 @@ def _uses_minimax_m3_flash_attention(vllm_config: VllmConfig) -> bool:
     if any(architecture in target_architectures for architecture in architectures):
         return True
     draft_architectures = (
+        "DSparkMiniMaxDraftModel",
         "Qwen3DSparkModel",
         "Qwen3OmniDSparkModel",
         "Eagle3LlamaForCausalLM",

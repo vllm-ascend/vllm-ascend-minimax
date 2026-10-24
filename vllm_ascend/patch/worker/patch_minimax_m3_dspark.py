@@ -8,7 +8,6 @@ Markov drafting, confidence, batching and cache metadata use the supplied
 vLLM/vLLM-Ascend implementations unchanged.
 """
 
-import torch
 import torch.nn.functional as F
 from torch import nn
 from vllm.model_executor.layers.layernorm import GemmaRMSNorm, RMSNorm
@@ -22,15 +21,14 @@ from vllm.model_executor.models.qwen3_dspark import Qwen3DSparkModel
 
 from vllm_ascend.models.minimax_m3.minimax_m3 import MiniMaxM3MLP
 from vllm_ascend.models.qwen3_dspark import AscendQwen3DSparkForCausalLM
-
-from .weights import iter_resolved_weights
+from vllm_ascend.patch.minimax_m3_dspark import iter_bf16_weights
 
 
 class MiniMaxFlashDraftLayer(DFlashQwen3DecoderLayer):
     def __init__(self, vllm_config, *, config, layer_idx, cache_config=None, quant_config=None, prefix=""):
         nn.Module.__init__(self)
         if quant_config is not None:
-            raise ValueError("This adapter resolves draft FP8 to BF16; draft quantization must be disabled")
+            raise ValueError("This adapter loads native BF16 draft weights; draft quantization must be disabled")
         self.hidden_size = config.hidden_size
         sliding_window, causal = _resolve_layer_attention(config, layer_idx)
         self.self_attn = DFlashQwen3Attention(
@@ -100,12 +98,12 @@ class MiniMaxFlashDSparkForCausalLM(AscendQwen3DSparkForCausalLM):
 
     def __init__(self, *, vllm_config, prefix=""):
         config = vllm_config.speculative_config.draft_model_config.hf_config
-        if getattr(config, "dspark_minimax_flash_adapter", None) != 1:
-            raise ValueError("Use a prepared M3.1 Flash standalone draft view")
+        if getattr(config, "ascend_minimax_dspark", None) != 1:
+            raise ValueError("Use the MiniMax M3.1 BF16 DSpark configuration")
         if not config.use_gemma_norm or config.hidden_act != "swigluoai":
             raise ValueError("Unexpected MiniMax draft decoder semantics")
         if getattr(config, "quantization_config", None):
-            raise ValueError("Prepared draft config must omit quantization_config")
+            raise ValueError("BF16 DSpark config must omit quantization_config")
         if getattr(config, "dspark_hybrid_context_fusion", False):
             raise ValueError("Hybrid context fusion is not implemented by this adapter")
         # DFlash's constructor honors model_cls; the DSpark constructor
@@ -119,5 +117,5 @@ class MiniMaxFlashDSparkForCausalLM(AscendQwen3DSparkForCausalLM):
         self.has_own_lm_head = False
 
     def load_weights(self, weights):
-        normalized = iter_resolved_weights(weights, self.config.to_dict(), torch.bfloat16)
+        normalized = iter_bf16_weights(weights, self.config.to_dict())
         return super().load_weights(normalized)

@@ -97,6 +97,7 @@ from vllm.v1.kv_cache_interface import (
     get_kv_quant_mode,
 )
 
+from vllm_ascend.ascend_config import get_ascend_config
 from vllm_ascend.device.device_op import DeviceOperator
 from vllm_ascend.models.common.ops.sequence_parallel import (
     sp_all_gather,
@@ -311,6 +312,7 @@ class MiniMaxM3SparseAttention(nn.Module, AttentionLayerBase):
         self.k_norm = GemmaRMSNorm(self.head_dim, eps=rms_norm_eps)
 
         vllm_config = get_current_vllm_config()
+        self.fuse_qknorm_rope = get_ascend_config().ascend_compilation_config.fuse_qknorm_rope
         self.layer_name = f"{prefix}.attn"
         self.kv_cache_dtype, self.kv_cache_torch_dtype = _resolve_layer_kv_cache_dtypes(
             cache_config,
@@ -426,7 +428,8 @@ class MiniMaxM3SparseAttention(nn.Module, AttentionLayerBase):
             )
 
         if (
-            get_ascend_device_type() == AscendDeviceType.A5
+            not self.fuse_qknorm_rope
+            or get_ascend_device_type() == AscendDeviceType.A5
             or main_qkv.device.type != "npu"
             or main_qkv.dtype != torch.bfloat16
             or positions.ndim != 1
@@ -483,7 +486,8 @@ class MiniMaxM3SparseAttention(nn.Module, AttentionLayerBase):
         # for larger batches where per-token programs become more expensive.
         max_fused_tokens = 512
         return (
-            HAS_TRITON
+            self.fuse_qknorm_rope
+            and HAS_TRITON
             and hidden_states.shape[0] <= max_fused_tokens
             and hidden_states.device.type == "npu"
             and hidden_states.dtype == torch.bfloat16
