@@ -352,7 +352,7 @@ jobs:
           fi
 
       - name: Dispatch quay.io sync
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           github-token: ${{ secrets.SYNC_TOOLS_TOKEN }}
           script: |
